@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simulador de Negocios — Versión Simple (v3)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="description" content="Simulador didáctico de negocios con múltiples decisiones: compra/venta, toma de decisiones, trato al cliente, riesgo y manejo de personal." />
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <!-- React 18 UMD + Babel for in-browser JSX compilation -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useMemo, useState } = React;
+
+    // ---------- Utilidades ----------
+    const initialState = {
+      ronda: 0,
+      rondasTotales: 8,
+      cash: 1000,
+      customer: 60,
+      morale: 60,
+      risk: 40,
+      decisionSkill: 50,
+      history: [],
+    };
+
+    const clamp = (v, min = 0, max = 100) => Math.max(min, Math.min(max, v));
+    const kpiColor = (val) => (val >= 75 ? "bg-green-500" : val >= 40 ? "bg-yellow-500" : "bg-red-500");
+    const moneyFmt = (n) => n.toLocaleString("es-MX", { style: "currency", currency: "MXN" });
+
+    // Helper para crear opción con efectos
+    const O = (label, e, resumen) => ({ label, efectos: e, resumen });
+
+    // ---------- Escenarios ----------
+    const ESCENARIOS_BASE = [
+      // ====== Toma de decisiones (>=5 opciones) ======
+      {
+        concepto: "Toma de decisiones",
+        texto: "Te proponen reducir costos operativos en 12%. ¿Qué priorizas para decidir?",
+        opciones: [
+          O("Análisis ABC de gastos y recortes graduales", { cash: +60, decisionSkill: +10, risk: -3 }, "Priorizas impacto y bajas riesgo."),
+          O("Automatizar un proceso clave", { cash: -250, decisionSkill: +9, risk: -2, morale: +2 }, "Inviertes hoy para eficiencia futura."),
+          O("Congelar contrataciones 2 meses", { cash: +90, morale: -5, decisionSkill: +4, risk: +2 }, "Ahorro rápido; puede tensar al equipo."),
+          O("Negociar con 3 proveedores críticos", { cash: +120, decisionSkill: +8, risk: -1 }, "Reduces costos sin afectar servicio."),
+          O("Reducir marketing 20% por 1 mes", { cash: +70, customer: -6, decisionSkill: +3, risk: +2 }, "Ahorra hoy; podría bajar la demanda."),
+        ],
+      },
+
+      // ====== Trato al cliente (2-3 opciones) ======
+      {
+        concepto: "Trato al cliente",
+        texto: "Cliente frecuente solicita devolución por producto con leve defecto.",
+        opciones: [
+          O("Devolución + cupón 10%", { cash: -80, customer: +14, decisionSkill: +4 }, "Recuperas confianza y futura recompra."),
+          O("Cambio por uno nuevo inmediato", { cash: -40, customer: +10, decisionSkill: +3 }, "Resuelves rápido con costo moderado."),
+          O("Revisión técnica y respuesta en 48h", { customer: +2, decisionSkill: +2, risk: -1 }, "Equilibras costo-tiempo, algo más lento."),
+        ],
+      },
+
+      // ====== Decisiones de riesgo (>=5 opciones) ======
+      {
+        concepto: "Decisiones de riesgo",
+        texto: "Evaluas expandirte a una nueva ciudad con demanda incierta.",
+        opciones: [
+          O("Piloto con pop-up de 2 semanas", { cash: -180, risk: -6, decisionSkill: +8, customer: +3 }, "Validas barato con datos reales."),
+          O("Alianza con distribuidor local", { cash: -120, risk: -4, decisionSkill: +7, customer: +2 }, "Compartes riesgo y acceso a mercado."),
+          O("Expansión completa inmediata", { cash: -600, risk: +15, decisionSkill: +3, customer: +5, morale: +2 }, "Alta exposición con potencial alto."),
+          O("Encuestas + prueba de anuncios", { cash: -80, risk: -3, decisionSkill: +6 }, "Datos rápidos antes de invertir en físico."),
+          O("Esperar trimestre y monitorear competidores", { risk: -2, decisionSkill: +4 }, "Prudencia; menor aprendizaje inmediato."),
+        ],
+      },
+
+      // ====== Manejo de personal (>=5 opciones) ======
+      {
+        concepto: "Manejo de personal",
+        texto: "Baja la productividad del turno vespertino. ¿Cómo intervienes?",
+        opciones: [
+          O("Reasignar metas claras + daily standup", { morale: +6, customer: +3, risk: -2, decisionSkill: +6 }, "Claridad y seguimiento mejoran foco."),
+          O("Bonos por cumplimiento trimestral", { cash: -120, morale: +8, decisionSkill: +4 }, "Incentivos alinean esfuerzos."),
+          O("Capacitación breve en servicio", { cash: -100, customer: +6, morale: +4, decisionSkill: +6, risk: -1 }, "Sube habilidades y trato al cliente."),
+          O("Rotación de roles 2 semanas", { morale: +3, customer: +2, decisionSkill: +3, risk: 0 }, "Aprendizaje cruzado; leve disrupción."),
+          O("Feedback 1:1 y plan de mejora", { morale: +7, decisionSkill: +5, risk: -2 }, "Atención personalizada eleva compromiso."),
+        ],
+      },
+
+      // ====== Compra y venta (2-3 opciones) ======
+      {
+        concepto: "Compra y venta",
+        texto: "Mayorista pide 150 unidades si ajustas precio 7%.",
+        opciones: [
+          O("Aceptar 7% y pago anticipado", { cash: +520, customer: +6, risk: -2, decisionSkill: +5 }, "Aseguras flujo y volumen."),
+          O("Ofrecer 4% + entrega en 2 partes", { cash: +380, customer: +5, risk: -1, decisionSkill: +6 }, "Negociación cuida margen y logística."),
+          O("Mantener precio + valor agregado", { cash: +180, customer: +3, decisionSkill: +4 }, "Vendes menos pero sostienes valor."),
+        ],
+      },
+
+      // ====== Más escenarios breves (opcionales) ======
+      {
+        concepto: "Trato al cliente",
+        texto: "Cliente VIP solicita atención fuera de horario.",
+        opciones: [
+          O("Atender con recargo fuera de horario", { cash: +120, customer: +6, morale: -2, decisionSkill: +3 }, "Ingresos extra con carga al equipo."),
+          O("Proponer cita prioritaria próxima", { customer: +3, morale: +2, decisionSkill: +3 }, "Mantienes límites y relación cordial."),
+        ],
+      },
+      {
+        concepto: "Compra y venta",
+        texto: "Inventario lento ocupa espacio de bodega.",
+        opciones: [
+          O("Bundles con top sellers", { cash: +190, customer: +3, risk: -1, decisionSkill: +4 }, "Combinas valor y liberas espacio."),
+          O("Descuento flash 24h del 25%", { cash: +230, decisionSkill: +3 }, "Liquidas rápido con margen menor."),
+        ],
+      },
+    ];
+
+    const buildScenarioDeck = () => {
+      const base = [...ESCENARIOS_BASE];
+      for (let i = base.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [base[i], base[j]] = [base[j], base[i]];
+      }
+      return base;
+    };
+
+    // ---------- Componente principal ----------
+    function SimuladorNegocios() {
+      const [state, setState] = useState(initialState);
+      const [deck, setDeck] = useState(buildScenarioDeck());
+      const [feedback, setFeedback] = useState("");
+      const [activeTab, setActiveTab] = useState("escenarios");
+      const [showHistory, setShowHistory] = useState(false);
+
+      // Compra/Venta (módulo)
+      const [cvPrecio, setCvPrecio] = useState(20);
+      const [cvCosto, setCvCosto] = useState(12);
+      const [cvCompra, setCvCompra] = useState(80);
+      const demanda = useMemo(() => {
+        const base = 120; // demanda máxima teórica
+        const sens = 3;   // sensibilidad a precio
+        const ruido = Math.random() * 8 - 4;
+        return Math.max(0, Math.round(base - sens * cvPrecio + ruido));
+      }, [cvPrecio]);
+
+      const progreso = useMemo(() => Math.round((state.ronda / state.rondasTotales) * 100), [state.ronda, state.rondasTotales]);
+
+      const kpis = [
+        { key: "cash", label: "Efectivo", value: state.cash, isMoney: true },
+        { key: "customer", label: "Satisfacción Cliente", value: clamp(state.customer) },
+        { key: "morale", label: "Moral del Personal", value: clamp(state.morale) },
+        { key: "risk", label: "Riesgo (↓ mejor)", value: clamp(state.risk) },
+        { key: "decisionSkill", label: "Habilidad de Decisión", value: clamp(state.decisionSkill) },
+      ];
+
+      const escenarioActual = deck[state.ronda];
+      const terminado = state.ronda >= state.rondasTotales;
+
+      const aplicarEfectos = (esc, opcion) => {
+        const e = opcion.efectos || {};
+        const next = {
+          ...state,
+          cash: state.cash + (e.cash ?? 0),
+          customer: clamp(state.customer + (e.customer ?? 0)),
+          morale: clamp(state.morale + (e.morale ?? 0)),
+          risk: clamp(state.risk + (e.risk ?? 0)),
+          decisionSkill: clamp(state.decisionSkill + (e.decisionSkill ?? 0)),
+          history: [...state.history, { concepto: esc.concepto, decision: opcion.label, efecto: opcion.efectos, resumen: opcion.resumen }],
+        };
+        setState(next);
+        setFeedback(`${esc.concepto}: ${opcion.resumen}`);
+      };
+
+      const siguiente = () => {
+        if (state.ronda + 1 >= state.rondasTotales) return;
+        setState((s) => ({ ...s, ronda: s.ronda + 1 }));
+        setFeedback("");
+      };
+
+      const reiniciar = () => {
+        setDeck(buildScenarioDeck());
+        setState({ ...initialState });
+        setFeedback("");
+        setActiveTab("escenarios");
+        setShowHistory(false);
+        setCvPrecio(20); setCvCosto(12); setCvCompra(80);
+      };
+
+      const finalizar = () => setState((s) => ({ ...s, ronda: s.rondasTotales }));
+
+      const simularOperacion = () => {
+        const vendidas = Math.min(cvCompra, demanda);
+        const ingreso = vendidas * cvPrecio;
+        const costo = cvCompra * cvCosto; // compras toda la orden
+        const margen = ingreso - costo;
+        const sobrante = Math.max(0, cvCompra - vendidas);
+
+        // Efectos a KPIs (simples)
+        const customerDelta = vendidas / Math.max(1, cvCompra) > 0.7 ? +4 : -2;
+        const moraleDelta = sobrante === 0 ? +3 : -1;
+        const riskDelta = sobrante > 30 ? +5 : -2;
+
+        setState((s) => ({
+          ...s,
+          cash: s.cash + margen,
+          customer: clamp(s.customer + customerDelta),
+          morale: clamp(s.morale + moraleDelta),
+          risk: clamp(s.risk + riskDelta),
+          decisionSkill: clamp(s.decisionSkill + 2),
+          history: [
+            ...s.history,
+            {
+              concepto: "Compra y venta (módulo)",
+              decision: `Compré ${cvCompra} a ${moneyFmt(cvCosto)} y vendí ${vendidas} a ${moneyFmt(cvPrecio)}`,
+              efecto: { cash: margen, customer: customerDelta, morale: moraleDelta, risk: riskDelta, decisionSkill: +2 },
+              resumen: `Ingreso ${moneyFmt(ingreso)}, costo ${moneyFmt(costo)}, margen ${moneyFmt(margen)}, sobrante ${sobrante}`,
+            },
+          ],
+        }));
+      };
+
+      return (
+        <div className="min-h-screen w-full bg-slate-50 text-slate-800">
+          <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
+            <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
+              <h1 className="text-2xl md:text-3xl font-bold">Simulador de Negocios — Versión Simple (v3)</h1>
+              <div className="flex items-center gap-2">
+                <button onClick={reiniciar} className="px-3 py-2 rounded-2xl bg-slate-900 text-white text-sm shadow">Reiniciar</button>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-5xl mx-auto p-4 grid md:grid-cols-3 gap-4">
+            {/* Columna principal */}
+            <section className="md:col-span-2 space-y-4">
+              {/* Tabs */}
+              <div className="flex gap-2">
+                {[
+                  { id: "escenarios", label: "Escenarios" },
+                  { id: "compraventa", label: "Módulo Compra/Venta" },
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setActiveTab(t.id)}
+                    className={`px-4 py-2 rounded-2xl border shadow-sm text-sm ${activeTab === t.id ? "bg-slate-900 text-white" : "bg-white"}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Panel Escenarios */}
+              {activeTab === "escenarios" && (
+                <div className="bg-white rounded-2xl p-4 shadow">
+                  {!terminado ? (
+                    <>
+                      <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Ronda {state.ronda + 1} de {state.rondasTotales}</div>
+                      <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden mb-4">
+                        <div className="h-full bg-slate-900" style={{ width: `${progreso}%` }} />
+                      </div>
+
+                      {escenarioActual ? (
+                        <div className="space-y-3">
+                          <div className="inline-flex items-center gap-2">
+                            <span className="inline-block px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold">
+                              {escenarioActual.concepto}
+                            </span>
+                          </div>
+                          <p className="text-lg font-medium">{escenarioActual.texto}</p>
+                          <div className="grid gap-2">
+                            {escenarioActual.opciones.map((op, idx) => (
+                              <button
+                                key={idx}
+                                onClick={() => aplicarEfectos(escenarioActual, op)}
+                                className="text-left px-4 py-3 rounded-xl border hover:shadow transition bg-slate-50"
+                              >
+                                <div className="font-semibold">{op.label}</div>
+                                <div className="text-sm text-slate-600">{op.resumen}</div>
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2">
+                            <div className="text-sm text-slate-600">{feedback && `✔ ${feedback}`}</div>
+                            <button onClick={siguiente} className="px-4 py-2 rounded-xl bg-slate-900 text-white shadow">Siguiente</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p>No hay escenario disponible.</p>
+                      )}
+                    </>
+                  ) : (
+                    // Reporte final
+                    <div className="space-y-4">
+                      <h2 className="text-xl font-bold">Reporte de la Sesión</h2>
+                      <div className="grid md:grid-cols-2 gap-3">
+                        <div className="p-3 rounded-xl bg-slate-50 border">
+                          <div className="text-sm text-slate-500">Efectivo final</div>
+                          <div className="text-2xl font-bold">{moneyFmt(state.cash)}</div>
+                        </div>
+                        <div className="p-3 rounded-xl bg-slate-50 border">
+                          <div className="text-sm text-slate-500">Indicadores</div>
+                          <div className="text-sm">Satisfacción cliente: <b>{state.customer}</b></div>
+                          <div className="text-sm">Moral personal: <b>{state.morale}</b></div>
+                          <div className="text-sm">Riesgo (↓ mejor): <b>{state.risk}</b></div>
+                          <div className="text-sm">Habilidad decisiones: <b>{state.decisionSkill}</b></div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border overflow-hidden">
+                        <table className="w-full text-sm">
+                          <thead className="bg-slate-100">
+                            <tr>
+                              <th className="text-left p-2">Concepto</th>
+                              <th className="text-left p-2">Decisión</th>
+                              <th className="text-left p-2">Resumen</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {state.history.map((h, i) => (
+                              <tr key={i} className="border-t">
+                                <td className="p-2">{h.concepto}</td>
+                                <td className="p-2">{h.decision}</td>
+                                <td className="p-2 text-slate-600">{h.resumen}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button onClick={reiniciar} className="px-4 py-2 rounded-xl bg-slate-900 text-white shadow">Jugar otra vez</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Panel Compra/Venta */}
+              {activeTab === "compraventa" && (
+                <div className="bg-white rounded-2xl p-4 shadow space-y-4">
+                  <h2 className="text-xl font-bold">Módulo Compra/Venta (rápido)</h2>
+                  <p className="text-sm text-slate-600">
+                    Ajusta los controles, luego presiona <b>Ejecutar operación</b>. A mayor precio, menor demanda.
+                  </p>
+                  <div className="grid md:grid-cols-3 gap-3">
+                    <div className="p-3 rounded-xl border bg-slate-50">
+                      <div className="text-xs text-slate-500 mb-1">Cantidad a comprar</div>
+                      <input type="range" min={20} max={200} value={cvCompra} onChange={(e)=>setCvCompra(parseInt(e.target.value))} className="w-full" />
+                      <div className="font-semibold">{cvCompra} unidades</div>
+                    </div>
+                    <div className="p-3 rounded-xl border bg-slate-50">
+                      <div className="text-xs text-slate-500 mb-1">Costo unitario (MXN)</div>
+                      <input type="range" min={5} max={30} value={cvCosto} onChange={(e)=>setCvCosto(parseInt(e.target.value))} className="w-full" />
+                      <div className="font-semibold">{moneyFmt(cvCosto)}</div>
+                    </div>
+                    <div className="p-3 rounded-xl border bg-slate-50">
+                      <div className="text-xs text-slate-500 mb-1">Precio de venta (MXN)</div>
+                      <input type="range" min={10} max={50} value={cvPrecio} onChange={(e)=>setCvPrecio(parseInt(e.target.value))} className="w-full" />
+                      <div className="font-semibold">{moneyFmt(cvPrecio)}</div>
+                    </div>
+                  </div>
+                  <div className="grid md:grid-cols-3 gap-3">
+                    <div className="p-3 rounded-xl border bg-slate-50">
+                      <div className="text-xs text-slate-500">Demanda simulada (aprox.)</div>
+                      <div className="text-2xl font-bold">{demanda}</div>
+                    </div>
+                    <div className="p-3 rounded-xl border bg-slate-50">
+                      <div className="text-xs text-slate-500">Margen unitario</div>
+                      <div className="text-2xl font-bold">{moneyFmt(cvPrecio - cvCosto)}</div>
+                    </div>
+                    <div className="p-3 rounded-xl border bg-slate-50">
+                      <div className="text-xs text-slate-500">Inventario sobrante estimado</div>
+                      <div className="text-2xl font-bold">{Math.max(0, cvCompra - Math.min(cvCompra, demanda))}</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={simularOperacion} className="px-4 py-2 rounded-xl bg-slate-900 text-white shadow">Ejecutar operación</button>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* Columna lateral: KPIs + Historial + Finalizar */}
+            <aside className="space-y-4">
+              <div className="bg-white rounded-2xl p-4 shadow">
+                <h3 className="font-bold mb-2">Indicadores (KPI)</h3>
+                <div className="space-y-3">
+                  {kpis.map((k) => (
+                    <div key={k.key}>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span>{k.label}</span>
+                        <span className="font-semibold">{k.isMoney ? moneyFmt(k.value) : k.value}</span>
+                      </div>
+                      {!k.isMoney && (
+                        <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+                          <div className={`h-full ${kpiColor(k.value)}`} style={{ width: `${k.value}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl p-4 shadow">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-bold">Historial</h3>
+                  <label className="text-sm inline-flex items-center gap-2">
+                    <input type="checkbox" checked={showHistory} onChange={(e)=>setShowHistory(e.target.checked)} /> Ver
+                  </label>
+                </div>
+                {showHistory ? (
+                  state.history.length ? (
+                    <div className="max-h-80 overflow-auto border rounded-xl">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-100">
+                          <tr>
+                            <th className="text-left p-2">Concepto</th>
+                            <th className="text-left p-2">Decisión</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {state.history.map((h, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="p-2">{h.concepto}</td>
+                              <td className="p-2 text-slate-600">{h.decision}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-600">Aún no hay decisiones registradas.</p>
+                  )
+                ) : (
+                  <p className="text-sm text-slate-600">Marca la casilla para ver el detalle.</p>
+                )}
+              </div>
+
+              {!terminado && (
+                <button onClick={finalizar} className="w-full px-4 py-2 rounded-xl bg-slate-900 text-white shadow">Finalizar y ver reporte</button>
+              )}
+            </aside>
+          </main>
+
+          <footer className="max-w-5xl mx-auto p-4 text-center text-xs text-slate-500">
+            © <span id="year"></span> Simulador didáctico. Conceptos: Compra/Venta, Toma de decisiones, Trato al cliente, Riesgo y Manejo de personal.
+          </footer>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<SimuladorNegocios />);
+    document.getElementById("year").textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>
